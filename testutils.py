@@ -6,8 +6,18 @@ import sys
 import re
 
 
+TestHook = Callable[[bool|None], bool|None]
+
 class Test():
-    def __init__(self, name:str, testedMethod: Callable, parameters:list|dict, expectedResults:Any|None=None):
+    def __init__(
+            self, 
+            name:str, 
+            testedMethod: Callable, 
+            parameters:list|dict, 
+            expectedResults:Any|None=None, 
+            pretest_hook:TestHook|None=None,
+            posttest_hook:TestHook|None=None
+            ):
         self._name = "TC_" + name.replace("\n", "_").replace(" ", "_").upper()
         self._id = -1
         self._tested_method = testedMethod
@@ -15,7 +25,10 @@ class Test():
         self._expected_res = expectedResults
         self._last_run_result = None
         self._logger:logging.Logger = logging.getLogger(self._name)
+        self._logger.addHandler(logging.StreamHandler(sys.stdout))
         self._logger.setLevel(level=logging.INFO)
+        self._bt_hook:TestHook = pretest_hook
+        self._at_hook:TestHook = posttest_hook
     
     def set_id(self, n_id:int):
         self._id = n_id
@@ -30,6 +43,17 @@ class Test():
     def __str__(self):
         return self.name
     
+    def reset_test(self):
+        self._last_run_result = None
+
+
+    def set_pretest_hook(self, hook: TestHook):
+        self._bt_hook = hook
+        self._last_run_result = None
+
+    def set_posttest_hook(self, hook: TestHook):
+        self._at_hook = hook
+        self._last_run_result = None
 
     def set_logger(self, parentName:str="", logfile:str|None= None):
         log_name = self.name
@@ -42,31 +66,57 @@ class Test():
         if parentName == "":
             self._logger.addHandler(logging.StreamHandler(stream=sys.stdout))
 
-    def pre_test(self):
-        self._logger.info("Start of Test Case " + self.name)
-
-    def post_test(self):
-        self._logger.info("End of Test Case " + str(self))
+    def _call_pretest_hook(self):
+        self._last_run_result = self._last_run_result if self._bt_hook == None else \
+            self._bt_hook(None)
+        if not self._last_run_result:
+            self._logger.info("Pre_test HOOK: FAILED")
+        
+    def _call_posttest_hook(self):
+        self._last_run_result = self._last_run_result if self._at_hook == None else \
+            self._at_hook(self._last_run_result)
+        if not self._last_run_result:
+            self._logger.info("Post_test HOOK: FAILED")
     
-    def run_test(self):
-        self.pre_test()
+    def pre_test(self)->bool|None:
         if self._last_run_result != None:
             self._logger.info("Test Case " + str(self) + " has already been run")
             self._logger.info("Last result will be used : " + str(self._last_run_result))
             return self._last_run_result
+        self._logger.info("Start of Test Case " + self.name)
+        self._call_pretest_hook()
+        return None if self._last_run_result else self._last_run_result
+
+    def post_test(self):
+        self._call_posttest_hook()
+        self._logger.info("End of Test Case " + str(self))
+    
+    def run_test(self):
+        # if pretest returns None, that means that pretest hook suceeded
+        # otherwise that might means that : 
+        # - either test has already been run ones, so test results are
+        #   already available
+        # - or pretest hook failed.
+        if self.pre_test() != None:
+            return self._last_run_result
+        
         self._logger.info("Test of function : " + str(self._tested_method))
         self._logger.info("With parameters : " + str(self._params))
         self._logger.info("Expected Results is : " + str(self._expected_res))
+        # Here, method call depends on whether list or dict unpacking has
+        # to be performed
         if(isinstance(self._params, list)):
             ret = self._tested_method(*self._params)
         else:
             ret = self._tested_method(**self._params)
-            
+
         self._last_run_result = (ret == self._expected_res)
+
         if not self._last_run_result:
             self._logger.warning("TEST CASE FAILED : Results is " + str(ret))
             return self._last_run_result
-        self._logger.warning("TEST CASE SUCCESS : Results is " + str(ret))
+        
+        self._logger.info("TEST CASE SUCCESS : Results is " + str(ret))
         self.post_test()
         return self._last_run_result
 
